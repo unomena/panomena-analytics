@@ -1,16 +1,18 @@
 import time
 import uuid
 import random
+import urllib
 import httplib2
 import re
 import struct
 
 from hashlib import md5
-from urllib import quote
 
 from django.conf import settings
 from django.http import HttpResponse
 from django.views.decorators.cache import never_cache
+
+from panomena_analytics import CAMPAIGN_TRACKING_PARAMS
 
 
 VERSION = '4.4sh'
@@ -86,11 +88,38 @@ def ga_request(request, response, path=None, event=None):
     # determine the referrer
     referer = request.GET.get('r', '')
     # get the path from the referer header
-    path = path or meta.get('HTTP_REFERER', '')
+    path = path or request.GET.get('p', '/')
     # try and get visitor cookie from the request
     user_agent = meta.get('HTTP_USER_AGENT', 'Unknown')
     cookie = request.COOKIES.get(COOKIE_NAME)
     visitor_id = get_visitor_id(meta.get('HTTP_X_DCMGUID', ''), account, user_agent, cookie)
+    # build the parameter collection
+    params = {
+        'utmwv': VERSION,
+        'utmn': str(random.randint(0, 0x7fffffff)),
+        'utmhn': domain,
+        'utmsr': '',
+        'utme': '',
+        'utmr': referer,
+        'utmp': path,
+        'utmac': account,
+        'utmcc': '__utma=%s;' % gen_utma(domain),
+        'utmvid': visitor_id,
+        'utmip': meta.get('REMOTE_ADDR', ''),
+    }
+    # add event parameters if supplied
+    if event:
+        params.update({
+            'utmt': 'event',
+            'utme': '5(%s)' % '*'.join(event),
+        })
+    # add campaign tracking parameters if provided
+    for param in CAMPAIGN_TRACKING_PARAMS:
+        if request.GET.has_key(param):
+            params[param] = request.GET[param]
+    # construct the gif hit url
+    utm_gif_location = "http://www.google-analytics.com/__utm.gif"
+    utm_url = utm_gif_location + "?" + urllib.urlencode(params)
     # always try and add the cookie to the response
     response.set_cookie(
         COOKIE_NAME,
@@ -98,20 +127,6 @@ def ga_request(request, response, path=None, event=None):
         expires=time.strftime('%a, %d-%b-%Y %H:%M:%S %Z', time_tup),
         path=COOKIE_PATH,
     )
-    # construct the gif hit url
-    utm_gif_location = "http://www.google-analytics.com/__utm.gif"
-    utm_url = utm_gif_location + "?" + \
-        "utmwv=" + VERSION + \
-        "&utmn=" + str(random.randint(0, 0x7fffffff)) + \
-        "&utmhn=" + quote(domain) + \
-        "&utmsr=" + '' + \
-        "&utme=" + '' + \
-        "&utmr=" + quote(referer) + \
-        "&utmp=" + quote(path) + \
-        "&utmac=" + account + \
-        "&utmcc=__utma%3D" + gen_utma(domain) + "%3B" + \
-        "&utmvid=" + visitor_id + \
-        "&utmip=" + get_ip(meta.get('REMOTE_ADDR', ''))
     # add event parameters if supplied
     if event:
         utm_url += '&utmt=event' + \
