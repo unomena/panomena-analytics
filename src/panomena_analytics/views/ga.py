@@ -19,6 +19,7 @@ VERSION = '4.4sh'
 COOKIE_NAME = '__utmmobile'
 COOKIE_PATH = '/'
 COOKIE_USER_PERSISTENCE = 63072000
+CAMPAIGN_PARAMS_KEY = 'ga_campaign_params'
 
 GIF_DATA = reduce(lambda x,y: x + struct.pack('B', y), 
                   [0x47,0x49,0x46,0x38,0x39,0x61,
@@ -113,10 +114,16 @@ def ga_request(request, response, path=None, event=None):
             'utmt': 'event',
             'utme': '5(%s)' % '*'.join(event),
         })
-    # add campaign tracking parameters if provided
+    # retrieve campaign tracking parameters from session
+    campaign_params = request.session.get(CAMPAIGN_PARAMS_KEY, {})
+    # update campaign params from request
     for param in CAMPAIGN_TRACKING_PARAMS:
         if request.GET.has_key(param):
-            params[param] = request.GET[param]
+            campaign_params[param] = request.GET[param]
+    # store campaign tracking parameters in session
+    request.session[CAMPAIGN_PARAMS_KEY] = campaign_params
+    # add campaign tracking parameters if provided
+    params.update(campaign_params)
     # construct the gif hit url
     utm_gif_location = "http://www.google-analytics.com/__utm.gif"
     utm_url = utm_gif_location + "?" + urllib.urlencode(params)
