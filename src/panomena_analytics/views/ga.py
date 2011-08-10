@@ -12,14 +12,16 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.views.decorators.cache import never_cache
 
-from panomena_analytics import CAMPAIGN_TRACKING_PARAMS
 
+CAMPAIGN_TRACKING_PARAMS = (
+    ('utm_campaign', 'utmccn', '(direct)'),
+    ('utm_source', 'utmcsr', '(direct)'),
+    ('utm_medium', 'utmcmd', '(none)'),
+)
 
-VERSION = '4.4sh'
-COOKIE_NAME = '__utmmobile'
-COOKIE_PATH = '/'
-COOKIE_USER_PERSISTENCE = 63072000
+VERSION = '5.1.2'
 CAMPAIGN_PARAMS_KEY = 'ga_campaign_params'
+GA_COOKIE_PREFIX = '__utm'
 
 GIF_DATA = reduce(lambda x,y: x + struct.pack('B', y), 
                   [0x47,0x49,0x46,0x38,0x39,0x61,
@@ -59,7 +61,8 @@ def get_visitor_id(guid, account, user_agent, cookie):
     return "0x" + md5String[:16]
 
 
-def gen_utma(domain_name):
+def generate_domain_hash(domain_name):
+    """Generate a hash of a domain name."""
     domain_hash = 0
     g = 0
     i = len(domain_name) - 1
@@ -68,19 +71,39 @@ def gen_utma(domain_name):
         domain_hash = ((domain_hash << 6) & 0xfffffff) + c + (c << 14)
         g = domain_hash & 0xfe00000
         if g!=0:
-            domain_hash = domain_hash ^ (g >> 21)
             i = i - 1
-            rnd_num = str(random.randint(1147483647, 2147483647))
-            time_num = str(time.time()).split('.')[0]
-            _utma = '%s.%s.%s.%s.%s.%s' % (domain_hash, rnd_num, time_num,
-                time_num, time_num, 1)
-    return _utma
+            domain_hash = domain_hash ^ (g >> 21)
+    return domain_hash
+
+
+def generate_utma(utmc):
+    rnd = str(random.randint(1147483647, 2147483647))
+    time_num = str(time.time()).split('.')[0]
+    return '%s.%s.%s.%s.%s.%s' % (utmc, rnd, time_num, time_num, time_num, 1)
+
+
+def generate_utmz(request, utmc):
+    """Generate the referral string."""
+    current_time = str(time.time()).split('.')[0]
+    # collect campaign tracking parameters
+    campaign_params = []
+    for key, value, default in CAMPAIGN_TRACKING_PARAMS:
+        campaign_params.append(value + '=' + request.GET.get(key, default))
+    campaign_params = '|'.join(campaign_params)
+    # generate the final string
+    return '%s.%s.1.1.%s' % (utmc, current_time, campaign_params)
+
+
+def generate_utmb(request, utmc):
+    """Generate the session tracking string."""
+    current_time = str(time.time()).split('.')[0]
+    return '%s.1.10.%s' % (utmc, current_time)
 
 
 def ga_request(request, response, path=None, event=None):
     """Sends a request to google analytics."""
     meta = request.META
-    time_tup = time.localtime(time.time() + COOKIE_USER_PERSISTENCE)
+    cookies = request.COOKIES
     # get the account id
     try: account = settings.GOOGLE_ANALYTICS_ID     
     except: raise Exception, "No Google Analytics ID configured"
@@ -92,8 +115,16 @@ def ga_request(request, response, path=None, event=None):
     path = path or request.GET.get('p', '/')
     # try and get visitor cookie from the request
     user_agent = meta.get('HTTP_USER_AGENT', 'Unknown')
-    cookie = request.COOKIES.get(COOKIE_NAME)
-    visitor_id = get_visitor_id(meta.get('HTTP_X_DCMGUID', ''), account, user_agent, cookie)
+    # set the cookie variables
+    utma = cookies.get('__utma')
+    utmc = cookies.get('__utmc')
+    if not utmc and utma:
+        utmc = utma.split('.')[0]
+    else:
+        utmc = cookies.get('__utmc') or generate_domain_hash(domain)
+    utma = utma or generate_utma(utmc)
+    utmb = cookies.get('__utmb') or generate_utmb(utmc)
+    utmz = cookies.get('__utmz') or generate_utmz(request, utmc)
     # build the parameter collection
     params = {
         'utmwv': VERSION,
@@ -104,8 +135,7 @@ def ga_request(request, response, path=None, event=None):
         'utmr': referer,
         'utmp': path,
         'utmac': account,
-        'utmcc': '__utma=%s;' % gen_utma(domain),
-        'utmvid': visitor_id,
+        'utmcc': urllib.quote('__utma=%s;+__utmz=%s;' % (utma, utmz)),
         'utmip': meta.get('REMOTE_ADDR', ''),
     }
     # add event parameters if supplied
@@ -114,26 +144,14 @@ def ga_request(request, response, path=None, event=None):
             'utmt': 'event',
             'utme': '5(%s)' % '*'.join(event),
         })
-    # retrieve campaign tracking parameters from session
-    campaign_params = request.session.get(CAMPAIGN_PARAMS_KEY, {})
-    # update campaign params from request
-    for param in CAMPAIGN_TRACKING_PARAMS:
-        if request.GET.has_key(param):
-            campaign_params[param] = request.GET[param]
-    # store campaign tracking parameters in session
-    request.session[CAMPAIGN_PARAMS_KEY] = campaign_params
-    # add campaign tracking parameters if provided
-    params.update(campaign_params)
     # construct the gif hit url
     utm_gif_location = "http://www.google-analytics.com/__utm.gif"
     utm_url = utm_gif_location + "?" + urllib.urlencode(params)
-    # always try and add the cookie to the response
-    response.set_cookie(
-        COOKIE_NAME,
-        value=visitor_id,
-        expires=time.strftime('%a, %d-%b-%Y %H:%M:%S %Z', time_tup),
-        path=COOKIE_PATH,
-    )
+    # always try and add the cookies to the response
+    response.set_cookie('__utma', utma, 63072000) 
+    response.set_cookie('__utmb', utmb, 1800) 
+    response.set_cookie('__utmc', utmc) 
+    response.set_cookie('__utmz', utmz, 15552000) 
     # add event parameters if supplied
     if event:
         utm_url += '&utmt=event' + \
