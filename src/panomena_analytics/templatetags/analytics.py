@@ -6,8 +6,6 @@ from django.core.urlresolvers import reverse
 
 from panomena_general.exceptions import RequestContextRequiredException
 
-from panomena_analytics import CAMPAIGN_TRACKING_PARAMS
-
 
 register = template.Library()
 
@@ -28,22 +26,11 @@ class GANode(template.Node):
             raise RequestContextRequiredException()
         # intialise the parameters collection
         params = {}
-        # collect the campaign tracking parameters from the request
-        for param in CAMPAIGN_TRACKING_PARAMS:
-            value = request.REQUEST.get(param, None)
-            if value: params[param] = value
         # pass on the referer if present
         referer = request.META.get('HTTP_REFERER', None)
         if referer: params['r'] = referer
-        # remove collected parameters from the path and pass it on
-        path = request.path
-        parsed_url = urlparse.urlparse(path)
-        query = urlparse.parse_qs(parsed_url.query)
-        for param in params:
-            if query.has_key(param): del query[param]
-        query = urllib.urlencode(query)
-        new_url = parsed_url._replace(query=query)
-        params['p'] = new_url.geturl()
+        # pass on the path
+        params['p'] = request.get_full_path()
         # append the debug parameter if requested
         if self.debug: params['utmdebug'] = 1
         # build and return the url

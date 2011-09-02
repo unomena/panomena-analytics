@@ -7,6 +7,8 @@ import re
 import struct
 
 from hashlib import md5
+from urllib import urlencode
+from urlparse import parse_qs, urlparse
 
 from django.conf import settings
 from django.http import HttpResponse
@@ -90,6 +92,19 @@ def ga_request(request, response, path=None, event=None):
     referer = request.GET.get('r', '')
     # get the path from the referer header
     path = path or request.GET.get('p', '/')
+    path_qs = parse_qs(urlparse(path).query)
+    # create google anayltics session dictionary
+    if CAMPAIGN_PARAMS_KEY not in request.session:
+        request.session[CAMPAIGN_PARAMS_KEY] = {}
+    # store campaign params in session if available
+    for k, v in path_qs.items():
+        if k in CAMPAIGN_TRACKING_PARAMS:
+            request.session[CAMPAIGN_PARAMS_KEY][k] = v[0]
+    # append campaign variables to the path if avaiable
+    if CAMPAIGN_PARAMS_KEY in request.session:
+        campaign_params = request.session[CAMPAIGN_PARAMS_KEY]
+        path_qs.update(campaign_params)
+        path = urlparse(path)._replace(query=urlencode(path_qs)).geturl()
     # try and get visitor cookie from the request
     user_agent = meta.get('HTTP_USER_AGENT', 'Unknown')
     cookie = request.COOKIES.get(COOKIE_NAME)
@@ -116,14 +131,8 @@ def ga_request(request, response, path=None, event=None):
         })
     # retrieve campaign tracking parameters from session
     campaign_params = request.session.get(CAMPAIGN_PARAMS_KEY, {})
-    # update campaign params from request
-    for param in CAMPAIGN_TRACKING_PARAMS:
-        if request.GET.has_key(param):
-            campaign_params[param] = request.GET[param]
     # store campaign tracking parameters in session
     request.session[CAMPAIGN_PARAMS_KEY] = campaign_params
-    # add campaign tracking parameters if provided
-    params.update(campaign_params)
     # construct the gif hit url
     utm_gif_location = "http://www.google-analytics.com/__utm.gif"
     utm_url = utm_gif_location + "?" + urllib.urlencode(params)
